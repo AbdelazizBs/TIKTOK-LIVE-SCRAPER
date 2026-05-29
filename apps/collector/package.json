@@ -1,0 +1,28 @@
+{
+  "name": "collector",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "tsc --noEmit",
+    "dev": "tsx src/index.ts",
+    "lint": "tsc --noEmit",
+    "start": "tsx src/index.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@live-leads/shared": "workspace:*",
+    "@supabase/supabase-js": "^2.87.1",
+    "commander": "^14.0.2",
+    "dotenv": "^17.2.3",
+    "libphonenumber-js": "^1.12.33",
+    "pino": "^10.1.0",
+    "tiktok-live-connector": "^2.0.6",
+    "zod": "^4.1.13"
+  },
+  "devDependencies": {
+    "@types/node": "^24.10.1",
+    "tsx": "^4.21.0",
+    "typescript": "^5.9.3"
+  }
+}
