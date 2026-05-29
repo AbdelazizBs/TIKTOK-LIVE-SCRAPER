@@ -110,7 +110,7 @@ Expected database result:
 - comment `prix svp` is skipped
 - lead `comment_count` is `4`
 
-To test a real TikTok LIVE:
+To test a real TikTok LIVE from the local collector:
 
 ```bash
 pnpm --filter collector start -- --username lella.khadija.fashion --session LIVE_SESSION_ID
@@ -120,6 +120,22 @@ The TikTok collector is unofficial and depends on TikTok's internal LIVE service
 If the account is offline, private, region-blocked, or TikTok changes its service,
 the connector may fail or reconnect repeatedly. Keep this collector local and
 isolated from the dashboard.
+
+The frontend live dashboard is available at:
+
+```txt
+/live-sessions
+```
+
+It polls the server every 2 seconds and shows:
+
+- one card per phone number
+- latest clean content
+- all valid comments grouped under that number
+- comment counts and new-comment-after-call status
+
+The browser calls a server-only Next.js route. The Supabase service role key is
+never exposed to client code.
 
 ## Current State
 

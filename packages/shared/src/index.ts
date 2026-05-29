@@ -4,7 +4,7 @@ export {
   extractTunisiaPhoneLead,
   normalizeArabicDigits,
   type ExtractedPhoneLead,
-} from "./phone.js";
+} from "./phone";
 
 export const leadStatuses = [
   "new",

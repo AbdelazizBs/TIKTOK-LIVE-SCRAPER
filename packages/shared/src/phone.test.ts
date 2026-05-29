@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { extractTunisiaPhoneLead } from "./phone.js";
+import { extractTunisiaPhoneLead } from "./phone";
 
 describe("extractTunisiaPhoneLead", () => {
   it.each([
