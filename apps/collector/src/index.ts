@@ -26,18 +26,25 @@ const program = new Command()
   .name("collector")
   .description("Local TikTok LIVE comment collector for Live Leads.")
   .option("--username <username>", "TikTok unique ID without @")
-  .requiredOption("--session <liveSessionId>", "Supabase live_sessions.id")
+  .option("--session <liveSessionId>", "Supabase live_sessions.id")
+  .option("--watch", "Watch Supabase for the latest running live session")
   .option("--mock", "Use fake comments instead of TikTok")
   .parse(process.argv);
 
 const options = program.opts<{
   username?: string;
-  session: string;
+  session?: string;
+  watch?: boolean;
   mock?: boolean;
 }>();
 
-if (!options.mock && !options.username) {
-  logger.error("Pass --username unless you are using --mock.");
+if (options.mock && !options.session) {
+  logger.error("Pass --session when using --mock.");
+  process.exit(1);
+}
+
+if (!options.watch && !options.session) {
+  logger.error("Pass --session or use --watch.");
   process.exit(1);
 }
 
@@ -77,12 +84,19 @@ type Lead = {
   id: string;
   comment_count: number;
   last_called_at: string | null;
+  phone_e164: string;
+  phone_is_potential_typo?: boolean;
 };
 
 await main();
 
 async function main() {
-  const liveSession = await getLiveSession(options.session);
+  if (options.watch) {
+    await watchRunningSessions();
+    return;
+  }
+
+  const liveSession = await getLiveSession(options.session as string);
 
   logger.info(
     {
@@ -114,6 +128,35 @@ async function main() {
   });
 }
 
+async function watchRunningSessions() {
+  logger.info("Watching for running live sessions.");
+
+  while (true) {
+    const liveSession = await getLatestRunningSession();
+
+    if (!liveSession) {
+      logger.info("No running live session found. Waiting.");
+      await sleep(3000);
+      continue;
+    }
+
+    logger.info(
+      {
+        session: liveSession.id,
+        username: liveSession.tiktok_username,
+      },
+      "Found running live session.",
+    );
+
+    await startTikTokCollector({
+      liveSession,
+      username: liveSession.tiktok_username,
+      failFast: true,
+    });
+    await sleep(3000);
+  }
+}
+
 async function getLiveSession(sessionId: string): Promise<LiveSession> {
   const { data, error } = await supabase
     .from("live_sessions")
@@ -129,6 +172,23 @@ async function getLiveSession(sessionId: string): Promise<LiveSession> {
   return data;
 }
 
+async function getLatestRunningSession(): Promise<LiveSession | null> {
+  const { data, error } = await supabase
+    .from("live_sessions")
+    .select("id, org_id, tiktok_username")
+    .eq("status", "running")
+    .order("started_at", { ascending: false, nullsFirst: false })
+    .limit(1)
+    .maybeSingle();
+
+  if (error) {
+    logger.error({ error }, "Could not load running live session.");
+    return null;
+  }
+
+  return data;
+}
+
 async function ingestComment(input: {
   liveSession: LiveSession;
   originalComment: string;
@@ -139,6 +199,16 @@ async function ingestComment(input: {
   const extracted = extractTunisiaPhoneLead(input.originalComment);
 
   if (!extracted) {
+    const attached = await attachTextOnlyCommentToRecentSingleLead(input);
+
+    if (attached) {
+      logger.info(
+        { leadId: attached.id, comment: input.originalComment },
+        "Attached text-only comment to same TikTok user's lead.",
+      );
+      return;
+    }
+
     logger.info({ comment: input.originalComment }, "Skipped comment without phone.");
     return;
   }
@@ -150,13 +220,15 @@ async function ingestComment(input: {
     const lead = await createLead({
       liveSession: input.liveSession,
       phoneHash,
-      originalComment: input.originalComment,
-      cleanContent: extracted.cleanContent,
-      phoneE164: extracted.phoneE164,
-      displayPhone: extracted.displayPhone,
-      tiktokUsername: input.tiktokUsername,
-      tiktokUserId: input.tiktokUserId,
-      commentTimestamp: input.commentTimestamp,
+    originalComment: input.originalComment,
+    cleanContent: extracted.cleanContent,
+    phoneE164: extracted.phoneE164,
+    displayPhone: extracted.displayPhone,
+    isPotentialTypo: extracted.isPotentialTypo,
+    rawPhoneCandidate: extracted.rawPhoneCandidate,
+    tiktokUsername: input.tiktokUsername,
+    tiktokUserId: input.tiktokUserId,
+    commentTimestamp: input.commentTimestamp,
     });
 
     await appendLeadComment(lead.id, input, extracted);
@@ -168,6 +240,8 @@ async function ingestComment(input: {
     lead: existingLead,
     originalComment: input.originalComment,
     cleanContent: extracted.cleanContent,
+    isPotentialTypo: extracted.isPotentialTypo,
+    rawPhoneCandidate: extracted.rawPhoneCandidate,
     tiktokUsername: input.tiktokUsername,
     tiktokUserId: input.tiktokUserId,
     commentTimestamp: input.commentTimestamp,
@@ -186,7 +260,7 @@ async function findLead(
 ): Promise<Lead | null> {
   const { data, error } = await supabase
     .from("leads")
-    .select("id, comment_count, last_called_at")
+    .select("id, comment_count, last_called_at, phone_e164, phone_is_potential_typo")
     .eq("live_session_id", liveSessionId)
     .eq("phone_hash", phoneHash)
     .maybeSingle();
@@ -205,6 +279,8 @@ async function createLead(input: {
   cleanContent: string;
   phoneE164: string;
   displayPhone: string;
+  isPotentialTypo: boolean;
+  rawPhoneCandidate: string;
   tiktokUsername?: string;
   tiktokUserId?: string;
   commentTimestamp: string;
@@ -220,12 +296,14 @@ async function createLead(input: {
       first_comment: input.originalComment,
       latest_comment: input.originalComment,
       latest_clean_content: input.cleanContent,
+      phone_is_potential_typo: input.isPotentialTypo,
+      raw_phone_candidate: input.rawPhoneCandidate,
       comment_count: 1,
       tiktok_username: input.tiktokUsername,
       tiktok_user_id: input.tiktokUserId,
       last_comment_at: input.commentTimestamp,
     })
-    .select("id, comment_count, last_called_at")
+    .select("id, comment_count, last_called_at, phone_e164, phone_is_potential_typo")
     .single();
 
   if (error) {
@@ -235,10 +313,74 @@ async function createLead(input: {
   return data;
 }
 
+async function attachTextOnlyCommentToRecentSingleLead(input: {
+  liveSession: LiveSession;
+  originalComment: string;
+  tiktokUsername?: string;
+  tiktokUserId?: string;
+  commentTimestamp: string;
+}): Promise<Lead | null> {
+  if (!input.tiktokUserId) {
+    return null;
+  }
+
+  const cutoff = new Date(Date.now() - 15 * 60 * 1000).toISOString();
+  const { data, error } = await supabase
+    .from("leads")
+    .select("id, comment_count, last_called_at, phone_e164, phone_is_potential_typo")
+    .eq("live_session_id", input.liveSession.id)
+    .eq("tiktok_user_id", input.tiktokUserId)
+    .neq("status", "confirmed")
+    .gte("last_comment_at", cutoff)
+    .order("last_comment_at", { ascending: false })
+    .limit(2);
+
+  if (error) {
+    throw error;
+  }
+
+  if (!data || data.length !== 1) {
+    if (data && data.length > 1) {
+      logger.warn(
+        {
+          comment: input.originalComment,
+          tiktokUserId: input.tiktokUserId,
+          matches: data.length,
+        },
+        "Skipped text-only comment because same TikTok user has multiple recent leads.",
+      );
+    }
+
+    return null;
+  }
+
+  const lead = data[0];
+  await updateLead({
+    lead,
+    originalComment: input.originalComment,
+    cleanContent: input.originalComment.trim(),
+    isPotentialTypo: false,
+    rawPhoneCandidate: lead.phone_e164,
+    tiktokUsername: input.tiktokUsername,
+    tiktokUserId: input.tiktokUserId,
+    commentTimestamp: input.commentTimestamp,
+  });
+  await appendLeadComment(lead.id, input, {
+    phoneE164: lead.phone_e164,
+    cleanContent: input.originalComment.trim(),
+    isPotentialTypo: false,
+    rawPhoneCandidate: lead.phone_e164,
+  });
+
+  return lead;
+}
+
 async function updateLead(input: {
   lead: Lead;
   originalComment: string;
   cleanContent: string;
+  isPotentialTypo: boolean;
+  rawPhoneCandidate: string;
   tiktokUsername?: string;
   tiktokUserId?: string;
   commentTimestamp: string;
@@ -256,6 +398,11 @@ async function updateLead(input: {
       comment_count: input.lead.comment_count + 1,
       tiktok_username: input.tiktokUsername,
       tiktok_user_id: input.tiktokUserId,
+      phone_is_potential_typo:
+        input.lead.phone_is_potential_typo || input.isPotentialTypo,
+      raw_phone_candidate: input.isPotentialTypo
+        ? input.rawPhoneCandidate
+        : undefined,
       last_comment_at: input.commentTimestamp,
       has_new_comment_after_call: hasNewCommentAfterCall,
     })
@@ -277,6 +424,8 @@ async function appendLeadComment(
   extracted: {
     phoneE164: string;
     cleanContent: string;
+    isPotentialTypo: boolean;
+    rawPhoneCandidate: string;
   },
 ) {
   const { error } = await supabase.from("lead_comments").insert({
@@ -284,6 +433,8 @@ async function appendLeadComment(
     original_comment: input.originalComment,
     clean_content: extracted.cleanContent,
     phone_e164: extracted.phoneE164,
+    phone_is_potential_typo: extracted.isPotentialTypo,
+    raw_phone_candidate: extracted.rawPhoneCandidate,
     tiktok_username: input.tiktokUsername,
     tiktok_user_id: input.tiktokUserId,
     comment_timestamp: input.commentTimestamp,
@@ -299,11 +450,13 @@ function hashPhone(phoneE164: string): string {
 }
 
 async function startTikTokCollector(input: {
+  failFast?: boolean;
   liveSession: LiveSession;
   username?: string;
 }) {
   const username = input.username ?? input.liveSession.tiktok_username;
   let reconnectDelayMs = 3000;
+  let failedConnectAttempts = 0;
 
   while (true) {
     const connection = new TikTokLiveConnection(username, {
@@ -347,11 +500,32 @@ async function startTikTokCollector(input: {
 
     try {
       await connection.connect();
+      failedConnectAttempts = 0;
+      let lastSessionStatusCheck = 0;
 
       while (connection.isConnected || connection.isConnecting) {
+        if (Date.now() - lastSessionStatusCheck > 5000) {
+          lastSessionStatusCheck = Date.now();
+
+          if (!(await isLiveSessionRunning(input.liveSession.id))) {
+            shouldReconnect = false;
+            logger.info(
+              { session: input.liveSession.id },
+              "Live session is no longer running. Stopping collector.",
+            );
+
+            if (connection.isConnected || connection.isConnecting) {
+              await connection.disconnect();
+            }
+
+            break;
+          }
+        }
+
         await sleep(1000);
       }
     } catch (error) {
+      failedConnectAttempts += 1;
       logger.error({ error, username }, "Failed to connect to TikTok LIVE.");
     } finally {
       if (connection.isConnected || connection.isConnecting) {
@@ -360,6 +534,23 @@ async function startTikTokCollector(input: {
     }
 
     if (!shouldReconnect) {
+      return;
+    }
+
+    if (!(await isLiveSessionRunning(input.liveSession.id))) {
+      logger.info(
+        { session: input.liveSession.id },
+        "Live session is no longer running. Returning to watch mode.",
+      );
+      return;
+    }
+
+    if (input.failFast && failedConnectAttempts >= 3) {
+      await markLiveSessionError(input.liveSession.id);
+      logger.error(
+        { session: input.liveSession.id, username },
+        "Stopping this session after repeated TikTok connection failures.",
+      );
       return;
     }
 
@@ -372,6 +563,35 @@ async function startTikTokCollector(input: {
   }
 }
 
+async function isLiveSessionRunning(sessionId: string) {
+  const { data, error } = await supabase
+    .from("live_sessions")
+    .select("status")
+    .eq("id", sessionId)
+    .single();
+
+  if (error) {
+    logger.error({ error, sessionId }, "Could not check live session status.");
+    return false;
+  }
+
+  return data.status === "running";
+}
+
 async function sleep(ms: number) {
   await new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function markLiveSessionError(sessionId: string) {
+  const { error } = await supabase
+    .from("live_sessions")
+    .update({
+      status: "error",
+      ended_at: new Date().toISOString(),
+    })
+    .eq("id", sessionId);
+
+  if (error) {
+    logger.error({ error, sessionId }, "Could not mark live session as error.");
+  }
 }

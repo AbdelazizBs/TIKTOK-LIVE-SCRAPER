@@ -110,7 +110,16 @@ Expected database result:
 - comment `prix svp` is skipped
 - lead `comment_count` is `4`
 
-To test a real TikTok LIVE from the local collector:
+To run the collector as a background local worker:
+
+```bash
+pnpm --filter collector start -- --watch
+```
+
+Then use the dashboard to start live sessions from a TikTok LIVE URL or username.
+The collector will pick up the newest running session.
+
+To test a real TikTok LIVE with an explicit session:
 
 ```bash
 pnpm --filter collector start -- --username lella.khadija.fashion --session LIVE_SESSION_ID
@@ -131,11 +140,86 @@ It polls the server every 2 seconds and shows:
 
 - one card per phone number
 - latest clean content
-- all valid comments grouped under that number
+- comments for the selected number only
 - comment counts and new-comment-after-call status
+- active leads separated from confirmed clients
 
 The browser calls a server-only Next.js route. The Supabase service role key is
 never exposed to client code.
+
+## Business Logic
+
+- Operators manually call numbers from the active list.
+- When the client is confirmed, check `Confirmed client`.
+- Confirmed clients move out of the active list into `Confirmed clients`.
+- The cleanup cron deletes confirmed leads, their comments, and call attempts
+  after the live is ended or after 30 seconds. This short delay is for testing.
+
+Run the second migration in Supabase before enabling cleanup:
+
+```txt
+supabase/migrations/0002_confirmed_cleanup.sql
+```
+
+Vercel cron is configured to call every minute:
+
+```txt
+/api/cron/cleanup-confirmed
+```
+
+The dashboard lead list polls every 2 seconds. That API reads Supabase, not
+TikTok. TikTok is read only by the local collector. For scale, the lead list
+returns at most 500 lead summaries and does not include all comment history.
+Comments are fetched separately only when a phone number is selected.
+
+## Operator Flow
+
+1. Seller opens TikTok LIVE.
+2. Operator opens `/live-sessions`.
+3. Operator pastes TikTok LIVE URL or username.
+4. Operator clicks `Start live session`.
+5. Local collector running in `--watch` mode connects to that live session.
+6. Valid Tunisian phone comments appear in the active call list.
+7. Operator manually calls each number.
+8. Operator checks `Confirmed client`.
+9. Confirmed clients disappear from the active list.
+10. Operator clicks `Stop live session` when done.
+11. To search the live again later, paste the URL or username and click
+    `Start live session` again.
+12. Cleanup cron removes confirmed lead data.
+
+Text-only follow-up comments:
+
+- A comment without a phone number never creates a lead.
+- If the same TikTok account has exactly one recent active lead in the current
+  live session, the text-only comment is appended to that lead.
+- If the same TikTok account has multiple recent numbers, the collector skips
+  the text-only comment instead of guessing which phone/order it belongs to.
+- The UI flags leads when one TikTok account used multiple numbers.
+
+Phone typo handling:
+
+- Exact valid Tunisian phone numbers are stored normally.
+- If a comment contains a mixed typo such as `98f253621`, `22545965za`, or
+  `98 d214 222`, the parser tries to recover a valid Tunisian phone number.
+- Recovered numbers are shown with a `Possible typo` badge so the operator can
+  confirm the number manually before calling.
+
+The stat cards are filters:
+
+- `Active numbers` shows unconfirmed leads.
+- `Waiting` shows uncalled active leads.
+- `Confirmed` shows confirmed leads for review.
+- `All comments` shows every lead in the current session.
+
+For testing, confirmed leads in one live session can be deleted immediately with:
+
+```txt
+/api/cron/cleanup-confirmed?force=1&session=LIVE_SESSION_ID
+```
+
+The dashboard button uses this scoped cleanup automatically for the currently
+loaded live session.
 
 ## Current State
 

@@ -21,6 +21,21 @@ describe("extractTunisiaPhoneLead", () => {
       displayPhone: "+216 98 421 295",
       cleanContent,
       originalContent: input,
+      isPotentialTypo: false,
+    });
+  });
+
+  it.each([
+    ["98f253621", "+21698253621", ""],
+    ["t48555222", "+21648555222", ""],
+    ["22545965za", "+21622545965", ""],
+    ["98 d214 222 robe", "+21698214222", "robe"],
+  ])("extracts possible typo %s", (input, phoneE164, cleanContent) => {
+    expect(extractTunisiaPhoneLead(input)).toMatchObject({
+      phoneE164,
+      cleanContent,
+      isPotentialTypo: true,
+      originalContent: input,
     });
   });
 

@@ -6,7 +6,8 @@ import {
 } from "@/lib/supabase-admin";
 
 const updateLeadSchema = z.object({
-  called: z.boolean(),
+  called: z.boolean().optional(),
+  confirmed: z.boolean().optional(),
 });
 
 export async function PATCH(
@@ -29,7 +30,38 @@ export async function PATCH(
   const { id } = await context.params;
   const supabase = createSupabaseAdminClient();
 
-  if (!body.data.called) {
+  if (body.data.confirmed === true) {
+    const confirmedAt = new Date().toISOString();
+
+    const { data: lead, error: leadError } = await supabase
+      .from("leads")
+      .update({
+        status: "confirmed",
+        last_called_at: confirmedAt,
+        has_new_comment_after_call: false,
+      })
+      .eq("id", id)
+      .select("id")
+      .single();
+
+    if (leadError) {
+      return NextResponse.json({ error: leadError.message }, { status: 500 });
+    }
+
+    const { error: attemptError } = await supabase.from("call_attempts").insert({
+      lead_id: lead.id,
+      result: "confirmed",
+      note: "Confirmed from dashboard.",
+    });
+
+    if (attemptError) {
+      return NextResponse.json({ error: attemptError.message }, { status: 500 });
+    }
+
+    return NextResponse.json({ ok: true, confirmedAt });
+  }
+
+  if (body.data.confirmed === false || body.data.called === false) {
     const { error } = await supabase
       .from("leads")
       .update({
@@ -45,6 +77,10 @@ export async function PATCH(
     }
 
     return NextResponse.json({ ok: true });
+  }
+
+  if (body.data.called !== true) {
+    return NextResponse.json({ error: "No update requested." }, { status: 400 });
   }
 
   const calledAt = new Date().toISOString();

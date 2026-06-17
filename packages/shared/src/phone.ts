@@ -5,6 +5,8 @@ export type ExtractedPhoneLead = {
   displayPhone: string;
   cleanContent: string;
   originalContent: string;
+  isPotentialTypo: boolean;
+  rawPhoneCandidate: string;
 };
 
 const digitMap: Record<string, string> = {
@@ -31,7 +33,7 @@ const digitMap: Record<string, string> = {
 };
 
 const candidatePattern =
-  /(?<![\d٠-٩۰-۹])(?:\+?\s*(?:216|٢١٦|۲۱۶)[\s().-]*)?(?:[\d٠-٩۰-۹][\s().-]*){8}(?![\d٠-٩۰-۹])/g;
+  /(?<![A-Za-z\d٠-٩۰-۹])(?:\+?\s*(?:216|٢١٦|۲۱۶)[\s().-]*)?(?:[\d٠-٩۰-۹][\s().-]*){8}(?![A-Za-z\d٠-٩۰-۹])/g;
 
 export function normalizeArabicDigits(input: string): string {
   return input.replace(/[٠-٩۰-۹]/g, (digit) => digitMap[digit] ?? digit);
@@ -42,11 +44,17 @@ export function extractTunisiaPhoneLead(
 ): ExtractedPhoneLead | null {
   const originalContent = input;
   const normalizedInput = normalizeArabicDigits(input);
-  const candidates = Array.from(normalizedInput.matchAll(candidatePattern));
+  const candidates = [
+    ...Array.from(normalizedInput.matchAll(candidatePattern)).map((match) => ({
+      isPotentialTypo: false,
+      rawCandidate: match[0],
+      startIndex: match.index,
+    })),
+    ...findTypoCandidates(normalizedInput),
+  ];
 
-  for (const match of candidates) {
-    const rawCandidate = match[0];
-    const normalizedPhone = normalizePhoneCandidate(rawCandidate);
+  for (const candidate of candidates) {
+    const normalizedPhone = normalizePhoneCandidate(candidate.rawCandidate);
 
     if (!normalizedPhone) {
       continue;
@@ -67,8 +75,14 @@ export function extractTunisiaPhoneLead(
     return {
       phoneE164,
       displayPhone: formatTunisiaDisplayPhone(phoneE164),
-      cleanContent: cleanMatchedPhone(normalizedInput, match.index, rawCandidate),
+      cleanContent: cleanMatchedPhone(
+        normalizedInput,
+        candidate.startIndex,
+        candidate.rawCandidate,
+      ),
       originalContent,
+      isPotentialTypo: candidate.isPotentialTypo,
+      rawPhoneCandidate: candidate.rawCandidate,
     };
   }
 
@@ -76,7 +90,7 @@ export function extractTunisiaPhoneLead(
 }
 
 function normalizePhoneCandidate(candidate: string): string | null {
-  const compact = candidate.replace(/[\s().-]/g, "");
+  const compact = candidate.replace(/[^\d+]/g, "");
 
   if (/^\+216\d{8}$/.test(compact)) {
     return compact;
@@ -91,6 +105,49 @@ function normalizePhoneCandidate(candidate: string): string | null {
   }
 
   return null;
+}
+
+function findTypoCandidates(input: string) {
+  const tokens = Array.from(input.matchAll(/\S+/g)).map((match) => ({
+    text: match[0],
+    startIndex: match.index ?? 0,
+  }));
+  const candidates: Array<{
+    isPotentialTypo: true;
+    rawCandidate: string;
+    startIndex: number;
+  }> = [];
+
+  for (let start = 0; start < tokens.length; start += 1) {
+    for (
+      let end = start;
+      end < Math.min(tokens.length, start + 4);
+      end += 1
+    ) {
+      const rawCandidate = input.slice(
+        tokens[start].startIndex,
+        tokens[end].startIndex + tokens[end].text.length,
+      );
+      const digits = rawCandidate.replace(/\D/g, "");
+      const containsLetters = /[A-Za-z]/.test(rawCandidate);
+
+      if (!containsLetters) {
+        continue;
+      }
+
+      if (digits.length !== 8 && !/^216\d{8}$/.test(digits)) {
+        continue;
+      }
+
+      candidates.push({
+        isPotentialTypo: true,
+        rawCandidate,
+        startIndex: tokens[start].startIndex,
+      });
+    }
+  }
+
+  return candidates;
 }
 
 function cleanMatchedPhone(

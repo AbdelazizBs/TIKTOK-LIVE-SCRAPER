@@ -5,14 +5,8 @@ import {
   hasSupabaseAdminEnv,
 } from "@/lib/supabase-admin";
 
-const leadCommentSchema = z.object({
-  id: z.string(),
-  original_comment: z.string(),
-  clean_content: z.string().nullable(),
-  tiktok_username: z.string().nullable(),
-  comment_timestamp: z.string(),
-  created_at: z.string(),
-});
+export const dynamic = "force-dynamic";
+export const revalidate = 0;
 
 const leadSchema = z.object({
   id: z.string(),
@@ -24,7 +18,9 @@ const leadSchema = z.object({
   last_called_at: z.string().nullable(),
   has_new_comment_after_call: z.boolean(),
   tiktok_username: z.string().nullable(),
-  lead_comments: z.array(leadCommentSchema),
+  tiktok_user_id: z.string().nullable(),
+  phone_is_potential_typo: z.boolean(),
+  raw_phone_candidate: z.string().nullable(),
 });
 
 const liveSessionSchema = z.object({
@@ -68,15 +64,14 @@ export async function GET(
           "last_called_at",
           "has_new_comment_after_call",
           "tiktok_username",
-          "lead_comments(id, original_comment, clean_content, tiktok_username, comment_timestamp, created_at)",
+          "tiktok_user_id",
+          "phone_is_potential_typo",
+          "raw_phone_candidate",
         ].join(","),
       )
       .eq("live_session_id", id)
-      .order("last_comment_at", { ascending: false })
-      .order("created_at", {
-        ascending: true,
-        referencedTable: "lead_comments",
-      }),
+      .order("last_comment_at", { ascending: true })
+      .limit(500),
   ]);
 
   if (sessionResult.error) {
@@ -96,9 +91,16 @@ export async function GET(
   const session = liveSessionSchema.parse(sessionResult.data);
   const leads = z.array(leadSchema).parse(leadsResult.data);
 
-  return NextResponse.json({
-    session,
-    leads,
-    serverTime: new Date().toISOString(),
-  });
+  return NextResponse.json(
+    {
+      session,
+      leads,
+      serverTime: new Date().toISOString(),
+    },
+    {
+      headers: {
+        "Cache-Control": "no-store, max-age=0",
+      },
+    },
+  );
 }

@@ -1,0 +1,18 @@
+import * as React from "react";
+import { cn } from "@/lib/utils";
+
+export function Alert({
+  className,
+  ...props
+}: React.HTMLAttributes<HTMLDivElement>) {
+  return (
+    <div
+      className={cn(
+        "rounded-lg border border-border bg-card p-4 text-card-foreground",
+        className,
+      )}
+      role="alert"
+      {...props}
+    />
+  );
+}
