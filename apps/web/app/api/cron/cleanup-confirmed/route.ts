@@ -32,17 +32,25 @@ export async function GET(request: Request) {
   const sessionId = url.searchParams.get("session");
   const supabase = createSupabaseAdminClient();
 
-  if (force) {
+  if (force || sessionId) {
     let deleteQuery = supabase
       .from("leads")
       .delete()
-      .eq("status", "confirmed");
+      .eq("status", "confirmed")
+      .select("id");
 
     if (sessionId) {
       deleteQuery = deleteQuery.eq("live_session_id", sessionId);
     }
 
-    const { data, error } = await deleteQuery.select("id");
+    if (!force) {
+      deleteQuery = deleteQuery.lt(
+        "updated_at",
+        new Date(Date.now() - 30_000).toISOString(),
+      );
+    }
+
+    const { data, error } = await deleteQuery;
 
     if (error) {
       return NextResponse.json({ error: error.message }, { status: 500 });

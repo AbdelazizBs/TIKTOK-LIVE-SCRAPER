@@ -69,6 +69,20 @@ type LiveLeadsResponse = {
 
 const dashboardPollMs = 10_000;
 
+async function cleanupConfirmedForSession(sessionId: string) {
+  const response = await fetch(
+    `/api/cron/cleanup-confirmed?session=${encodeURIComponent(sessionId)}`,
+    {
+      cache: "no-store",
+    },
+  );
+
+  if (!response.ok) {
+    const payload = await response.json();
+    throw new Error(payload.error ?? "Could not clean confirmed leads.");
+  }
+}
+
 export function LiveLeadsDashboard({
   initialSessionId,
 }: {
@@ -97,12 +111,14 @@ export function LiveLeadsDashboard({
       return;
     }
 
+    const sessionId = activeSessionId;
     let cancelled = false;
 
     async function loadLeads() {
       try {
+        await cleanupConfirmedForSession(sessionId);
         const response = await fetch(
-          `/api/live-sessions/${activeSessionId}/leads`,
+          `/api/live-sessions/${sessionId}/leads`,
           { cache: "no-store" },
         );
         const payload = await response.json();
@@ -417,6 +433,7 @@ export function LiveLeadsDashboard({
       return;
     }
 
+    await cleanupConfirmedForSession(sessionId);
     const response = await fetch(`/api/live-sessions/${sessionId}/leads`, {
       cache: "no-store",
     });
